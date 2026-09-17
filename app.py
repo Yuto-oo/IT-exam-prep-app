@@ -3,6 +3,7 @@ import json
 import os
 import random
 import time
+import boto3 # 💡 追加: AWS操作用ライブラリ
 from datetime import datetime
 from dotenv import load_dotenv
 import streamlit as st
@@ -12,8 +13,8 @@ from aws_db import (
     load_suspend_state_from_aws, 
     clear_suspend_state_in_aws,
     load_bookmarks_from_aws,
-    load_user_profile, # 💡 追加
-    save_user_profile  # 💡 追加
+    load_user_profile,
+    save_user_profile
 )
 from dashboard import show_dashboard
 from quiz_page import show_quiz_page
@@ -39,17 +40,55 @@ if 'saved_session' not in st.session_state: st.session_state.saved_session = Non
 if 'bookmarks' not in st.session_state: st.session_state.bookmarks = set()
 if 'filter_bm' not in st.session_state: st.session_state.filter_bm = False
 if 'is_over_time' not in st.session_state: st.session_state.is_over_time = False 
-
-# 💡 通知設定用のセッション変数を追加
 if 'email' not in st.session_state: st.session_state.email = ""
 if 'receive_notifications' not in st.session_state: st.session_state.receive_notifications = True
+
+
+# ==========================================
+# 💡 追加: 管理者へのフィードバック送信関数
+# ==========================================
+def send_feedback_to_admin(user_id, issue_type, details, question_info=""):
+    """ユーザーからの報告をSES経由で管理者のGmailへ送信する"""
+    try:
+        ses_client = boto3.client(
+            'ses',
+            region_name=os.getenv('AWS_REGION', 'ap-northeast-1'),
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+        )
+        
+        # 送信元・送信先ともにアプリのメアドを指定
+        SENDER = "学習アプリ フィードバック機能 <exam.app.noreply@gmail.com>"
+        RECEIVER = "exam.app.noreply@gmail.com"
+        
+        subject = f"【報告】{issue_type} - {user_id}さんより"
+        body = f"""ユーザー: {user_id}
+報告種別: {issue_type}
+関連問題: {question_info}
+
+【詳細】
+{details}
+"""
+        ses_client.send_email(
+            Source=SENDER,
+            Destination={'ToAddresses': [RECEIVER]},
+            Message={
+                'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+                'Body': {'Text': {'Data': body, 'Charset': 'UTF-8'}}
+            }
+        )
+        return True
+    except Exception as e:
+        print(f"フィードバック送信エラー: {e}")
+        return False
+
 
 # --- 🛡️ 1. ログイン画面 ---
 if st.session_state.user_name is None:
     st.title("🛡️ ログイン")
     with st.form("login_form"):
         input_name = st.text_input("名前 / 学籍番号")
-        input_email = st.text_input("メールアドレス（リマインド通知用・任意）") # 💡 追加
+        input_email = st.text_input("メールアドレス（リマインド通知用・任意）")
         input_level = st.selectbox("現在のあなたの知識レベル", ["初学者（当アプリのみを利用している方）", "中級者（他の勉強アプリ・サイトを同時に利用している方）", "上級者（合格レベル）"])
         input_password = st.text_input("クラス共通パスワード", type="password")
         submit_btn = st.form_submit_button("学習を開始する")
@@ -66,11 +105,9 @@ if st.session_state.user_name is None:
                 st.session_state.exam_code = "FEA"
                 
                 with st.spinner("☁️ AWSから過去の学習データと中断データを同期しています..."):
-                    # 💡 ユーザープロファイルの同期と保存
                     profile = load_user_profile(input_name)
                     final_email = input_email if input_email else profile.get('email', '')
                     
-                    # 初めてメアドを入力した時だけ通知設定をTrueにし、それ以外は前回の設定を引き継ぐ
                     if input_email and not profile.get('email'):
                         final_notif = True
                     else:
@@ -130,7 +167,6 @@ questions = load_data(st.session_state.exam_code)
 st.sidebar.title(f"👤 メニュー")
 app_mode = st.sidebar.radio("📋 機能を切り替える", ["クイズ学習", "学習ダッシュボード"])
 
-# 💡 通知設定のコントロールパネルをサイドバーに追加
 if st.session_state.user_name:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 通知設定")
@@ -143,6 +179,31 @@ if st.session_state.user_name:
         st.session_state.receive_notifications = new_notif
         save_user_profile(st.session_state.user_name, st.session_state.email, new_notif)
         st.sidebar.success("✅ 通知設定を更新しました")
+
+    # ==========================================
+    # 💡 追加: フィードバック報告フォームUI
+    # ==========================================
+    st.sidebar.markdown("---")
+    with st.sidebar.expander("💬 バグ・問題の解説ミスを報告する"):
+        with st.form("feedback_form", clear_on_submit=True):
+            issue_type = st.selectbox(
+                "報告の種類", 
+                ["問題の解説が間違っている/不十分", "システムのエラー・バグ", "機能の要望", "その他"]
+            )
+            question_info = st.text_input("関連する問題番号（任意）", placeholder="例: 基本情報 令和5年 問1")
+            details = st.text_area("詳細をお書きください（必須）")
+            
+            submitted = st.form_submit_button("管理者に報告を送信")
+
+            if submitted:
+                if not details.strip():
+                    st.warning("詳細を入力してください。")
+                else:
+                    success = send_feedback_to_admin(st.session_state.user_name, issue_type, details, question_info)
+                    if success:
+                        st.success("報告を送信しました。ご協力ありがとうございます！")
+                    else:
+                        st.error("送信に失敗しました。時間をおいて再度お試しください。")
 
 if st.sidebar.button("ログアウト"): 
     st.session_state.clear()
