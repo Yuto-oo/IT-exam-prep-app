@@ -11,7 +11,9 @@ from aws_db import (
     load_user_history_from_aws, 
     load_suspend_state_from_aws, 
     clear_suspend_state_in_aws,
-    load_bookmarks_from_aws
+    load_bookmarks_from_aws,
+    load_user_profile, # 💡 追加
+    save_user_profile  # 💡 追加
 )
 from dashboard import show_dashboard
 from quiz_page import show_quiz_page
@@ -36,13 +38,18 @@ if 'suspended' not in st.session_state: st.session_state.suspended = False
 if 'saved_session' not in st.session_state: st.session_state.saved_session = None
 if 'bookmarks' not in st.session_state: st.session_state.bookmarks = set()
 if 'filter_bm' not in st.session_state: st.session_state.filter_bm = False
-if 'is_over_time' not in st.session_state: st.session_state.is_over_time = False # 💡 15分経過フラグ
+if 'is_over_time' not in st.session_state: st.session_state.is_over_time = False 
+
+# 💡 通知設定用のセッション変数を追加
+if 'email' not in st.session_state: st.session_state.email = ""
+if 'receive_notifications' not in st.session_state: st.session_state.receive_notifications = True
 
 # --- 🛡️ 1. ログイン画面 ---
 if st.session_state.user_name is None:
     st.title("🛡️ ログイン")
     with st.form("login_form"):
         input_name = st.text_input("名前 / 学籍番号")
+        input_email = st.text_input("メールアドレス（リマインド通知用・任意）") # 💡 追加
         input_level = st.selectbox("現在のあなたの知識レベル", ["初学者（当アプリのみを利用している方）", "中級者（他の勉強アプリ・サイトを同時に利用している方）", "上級者（合格レベル）"])
         input_password = st.text_input("クラス共通パスワード", type="password")
         submit_btn = st.form_submit_button("学習を開始する")
@@ -59,9 +66,24 @@ if st.session_state.user_name is None:
                 st.session_state.exam_code = "FEA"
                 
                 with st.spinner("☁️ AWSから過去の学習データと中断データを同期しています..."):
+                    # 💡 ユーザープロファイルの同期と保存
+                    profile = load_user_profile(input_name)
+                    final_email = input_email if input_email else profile.get('email', '')
+                    
+                    # 初めてメアドを入力した時だけ通知設定をTrueにし、それ以外は前回の設定を引き継ぐ
+                    if input_email and not profile.get('email'):
+                        final_notif = True
+                    else:
+                        final_notif = profile.get('receive_notifications', True)
+                        
+                    save_user_profile(input_name, final_email, final_notif)
+                    st.session_state.email = final_email
+                    st.session_state.receive_notifications = final_notif
+
                     st.session_state.history = load_user_history_from_aws(input_name)
                     st.session_state.bookmarks = load_bookmarks_from_aws(input_name)
                     saved_state = load_suspend_state_from_aws(input_name)
+                    
                     if saved_state:
                         st.session_state.saved_session = saved_state
                         st.session_state.suspended = True
@@ -107,6 +129,21 @@ questions = load_data(st.session_state.exam_code)
 # --- 👤 3. メインサイドバーメニュー ---
 st.sidebar.title(f"👤 メニュー")
 app_mode = st.sidebar.radio("📋 機能を切り替える", ["クイズ学習", "学習ダッシュボード"])
+
+# 💡 通知設定のコントロールパネルをサイドバーに追加
+if st.session_state.user_name:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔔 通知設定")
+    st.sidebar.caption("※試験合格後など、リマインド通知を停止したい場合はチェックを外してください。")
+    
+    current_notif = st.session_state.get('receive_notifications', True)
+    new_notif = st.sidebar.checkbox("学習リマインド通知を受け取る", value=current_notif, key="notif_checkbox")
+    
+    if new_notif != current_notif:
+        st.session_state.receive_notifications = new_notif
+        save_user_profile(st.session_state.user_name, st.session_state.email, new_notif)
+        st.sidebar.success("✅ 通知設定を更新しました")
+
 if st.sidebar.button("ログアウト"): 
     st.session_state.clear()
     st.rerun()
@@ -138,7 +175,7 @@ if not st.session_state.config_done:
             st.session_state.quiz_questions = restored_qs
             st.session_state.current_index = int(ss['current_index'])
             st.session_state.config_done = True
-            st.session_state.is_over_time = False # 💡
+            st.session_state.is_over_time = False 
             st.session_state.start_time = time.time()
             st.rerun()
         else:
@@ -227,7 +264,7 @@ if not st.session_state.config_done:
             
             st.session_state.suspended = False
             st.session_state.saved_session = None
-            st.session_state.is_over_time = False # 💡
+            st.session_state.is_over_time = False 
             clear_suspend_state_in_aws(st.session_state.user_name)
             
             st.session_state.start_time = time.time()
@@ -251,7 +288,7 @@ if st.session_state.finished:
         
         st.session_state.suspended = False
         st.session_state.saved_session = None
-        st.session_state.is_over_time = False # 💡
+        st.session_state.is_over_time = False 
         clear_suspend_state_in_aws(st.session_state.user_name)
         
         st.rerun()

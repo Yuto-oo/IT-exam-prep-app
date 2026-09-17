@@ -33,7 +33,7 @@ def load_user_history_from_aws(username):
         
         for item in items:
             time_taken = float(item.get('time_taken', 0.0))
-            if time_taken >= 900.0:  # 💡 15分以上かかった過去のログを集計から除外
+            if time_taken >= 900.0:
                 continue
 
             exam_code = str(item.get('exam_code', 'FE'))
@@ -90,7 +90,7 @@ def load_global_statistics_from_aws(exam_code):
         
         for item in items:
             time_taken = float(item.get('time_taken', 0.0))
-            if time_taken >= 900.0:  # 💡 15分以上かかったログを全体統計から除外
+            if time_taken >= 900.0:
                 continue
 
             cat = str(item.get('category_large', '未分類'))
@@ -280,3 +280,26 @@ def load_global_bookmark_counts():
         return bookmark_counts
     except Exception:
         return {}
+
+# 💡 新規追加：ユーザープロファイル（通知設定・メールアドレス）管理用
+def load_user_profile(username):
+    try:
+        dynamodb = get_dynamodb_resource()
+        table = dynamodb.Table('Exam_Learning_Users')
+        response = table.get_item(Key={'user_id': str(username)})
+        return response.get('Item', {})
+    except Exception:
+        return {}
+
+def save_user_profile(username, email, receive_notifications):
+    try:
+        dynamodb = get_dynamodb_resource()
+        table = dynamodb.Table('Exam_Learning_Users')
+        table.put_item(Item={
+            'user_id': str(username),
+            'email': str(email) if email else "",
+            'receive_notifications': bool(receive_notifications),
+            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        })
+    except Exception:
+        pass
